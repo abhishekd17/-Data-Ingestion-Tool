@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Data Ingestion Tool</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1, h2 { color: #333; }
+        form { margin-bottom: 20px; }
+        input, select, button { margin: 5px; padding: 5px; }
+        button { cursor: pointer; }
+        button:disabled { cursor: not-allowed; opacity: 0.5; }
+        #status, #result { color: #333; font-weight: bold; }
+    </style>
+    <script>
+        let csvUploaded = false;
+
+        function updateIngestionButton() {
+            const button = document.getElementById('ingestButton');
+            button.disabled = !csvUploaded;
+        }
+
+        async function connectClickhouse() {
+            const formData = new FormData(document.getElementById('clickhouseForm'));
+            try {
+                const response = await fetch('/connect_clickhouse', { method: 'POST', body: formData });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                const result = await response.json();
+                console.log('Connect response:', result);
+                const tablesSelect = document.getElementById('tables');
+                tablesSelect.innerHTML = '<option value="">Select a table</option>';
+                if (result.tables && result.tables.length > 0) {
+                    result.tables.forEach(table => {
+                        const option = document.createElement('option');
+                        option.value = table;
+                        option.text = table;
+                        tablesSelect.appendChild(option);
+                    });
+                } else {
+                    alert('No tables found in mydb: ' + (result.error || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Connect error:', error);
+                alert('Failed to connect to ClickHouse: ' + error.message);
+            }
+        }
+
+        async function getColumnsClickhouse() {
+            const tableName = document.getElementById('tables').value;
+            if (!tableName) {
+                alert('Please select a table first');
+                return;
+            }
+            const formData = new FormData(document.getElementById('clickhouseForm'));
+            formData.append('table_name', tableName);
+            try {
+                const response = await fetch('/get_columns_clickhouse', { method: 'POST', body: formData });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                const result = await response.json();
+                console.log('Columns response:', result);
+                const columnsDiv = document.getElementById('columns');
+                columnsDiv.innerHTML = '';
+                if (result.columns && result.columns.length > 0) {
+                    result.columns.forEach(column => {
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.value = column;
+                        checkbox.name = 'columns';
+                        columnsDiv.appendChild(checkbox);
+                        columnsDiv.appendChild(document.createTextNode(column));
+                        columnsDiv.appendChild(document.createElement('br'));
+                    });
+                } else {
+                    alert('No columns found: ' + (result.error || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Columns error:', error);
+                alert('Failed to load columns: ' + error.message);
+            }
+        }
+
+        async function ingestClickhouseToFlatfile() {
+            const tableName = document.getElementById('tables').value;
+            if (!tableName) {
+                alert('Please select a table first');
+                return;
+            }
+            const selectedColumns = Array.from(document.querySelectorAll('input[name="columns"]:checked')).map(cb => cb.value);
+            if (selectedColumns.length === 0) {
+                alert('Please select at least one column');
+                return;
+            }
+            const formData = new FormData(document.getElementById('clickhouseForm'));
+            formData.append('table_name', tableName);
+            formData.append('selected_columns', selectedColumns.join(','));
+            document.getElementById('status').textContent = 'Ingesting...';
+            try {
+                const response = await fetch('/ingest_clickhouse_to_flatfile', { method: 'POST', body: formData });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                const result = await response.json();
+                console.log('Export response:', result);
+                document.getElementById('status').textContent = '';
+                if (result.record_count !== undefined) {
+                    document.getElementById('result').textContent = `Completed: ${result.record_count} records exported to output.csv`;
+                } else {
+                    alert('Export failed: ' + (result.error || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Export error:', error);
+                document.getElementById('status').textContent = '';
+                alert('Export failed: ' + error.message);
+            }
+        }
+
+        async function uploadFlatfile() {
+            const formData = new FormData(document.getElementById('flatfileForm'));
+            try {
+                const response = await fetch('/upload_flatfile', { method: 'POST', body: formData });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                const result = await response.json();
+                console.log('Upload response:', result);
+                const columnsDiv = document.getElementById('flatfile_columns');
+                columnsDiv.innerHTML = '';
+                if (result.columns && result.columns.length > 0) {
+                    result.columns.forEach(column => {
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.value = column;
+                        checkbox.name = 'flatfile_columns';
+                        columnsDiv.appendChild(checkbox);
+                        columnsDiv.appendChild(document.createTextNode(column));
+                        columnsDiv.appendChild(document.createElement('br'));
+                    });
+                    csvUploaded = true;
+                    updateIngestionButton();
+                } else {
+                    alert('No columns found in CSV: ' + (result.error || 'Unknown error'));
+                    csvUploaded = false;
+                    updateIngestionButton();
+                }
+            } catch (error) {
+                console.error('Upload error:', error);
+                alert('Failed to upload CSV: ' + error.message);
+                csvUploaded = false;
+                updateIngestionButton();
+            }
+        }
+
+        async function ingestFlatfileToClickhouse() {
+            const targetTable = document.getElementById('target_table').value;
+            if (!targetTable) {
+                alert('Please enter a target table name');
+                return;
+            }
+            const selectedColumns = Array.from(document.querySelectorAll('input[name="flatfile_columns"]:checked')).map(cb => cb.value);
+            if (selectedColumns.length === 0) {
+                alert('Please select at least one column');
+                return;
+            }
+            const formData = new FormData(document.getElementById('flatfileForm'));
+            formData.append('selected_columns', selectedColumns.join(','));
+            formData.append('target_table', targetTable);
+            console.log('Form data:', Array.from(formData.entries()));
+            document.getElementById('status').textContent = 'Ingesting...';
+            try {
+                const response = await fetch('/ingest_flatfile_to_clickhouse', { method: 'POST', body: formData });
+                const result = await response.json();
+                console.log('Import response:', result);
+                document.getElementById('status').textContent = '';
+                if (response.ok && result.record_count !== undefined) {
+                    document.getElementById('result').textContent = `Completed: ${result.record_count} records imported to ${targetTable}. Please upload a new CSV to continue.`;
+                    document.getElementById('flatfile_columns').innerHTML = '';
+                    document.getElementById('target_table').value = '';
+                    csvUploaded = false;
+                    updateIngestionButton();
+                } else {
+                    alert('Import failed: ' + (result.error || `Server error (status ${response.status})`));
+                }
+            } catch (error) {
+                console.error('Import error:', error);
+                document.getElementById('status').textContent = '';
+                alert('Import failed: ' + error.message);
+            }
+        }
+    </script>
+</head>
+<body>
+    <h1>Data Ingestion Tool</h1>
+
+    <h2>ClickHouse to Flat File</h2>
+    <form id="clickhouseForm">
+        <input type="text" name="host" value="v2yxl8xjud.us-east1.gcp.clickhouse.cloud" required><br>
+        <input type="text" name="port" value="8443" required><br>
+        <input type="text" name="user" value="default" required><br>
+        <input type="text" name="password" value="c4Cx6.6.AFWhi" required><br>
+        <button type="button" onclick="connectClickhouse()">Connect</button><br>
+        <select id="tables"><option value="">Select a table</option></select><br>
+        <button type="button" onclick="getColumnsClickhouse()">Load Columns</button><br>
+        <div id="columns"></div>
+        <button type="button" onclick="ingestClickhouseToFlatfile()">Start Ingestion</button>
+    </form>
+
+    <h2>Flat File to ClickHouse</h2>
+    <form id="flatfileForm" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".csv" required><br>
+        <button type="button" onclick="uploadFlatfile()">Upload and Load Columns</button><br>
+        <div id="flatfile_columns"></div>
+        <input type="text" name="host" value="v2yxl8xjud.us-east1.gcp.clickhouse.cloud" required><br>
+        <input type="text" name="port" value="8443" required><br>
+        <input type="text" name="user" value="default" required><br>
+        <input type="text" name="password" value="c4Cx6.6.AFWhi" required><br>
+        <input type="text" id="target_table" placeholder="Target Table Name (e.g., new_table)" required><br>
+        <button type="button" id="ingestButton" onclick="ingestFlatfileToClickhouse()" disabled>Start Ingestion</button>
+    </form>
+
+    <div id="status"></div>
+    <div id="result"></div>
+</body>
+</html>
